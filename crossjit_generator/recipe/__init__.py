@@ -1,0 +1,1 @@
+"""Static Provider recipe protocol."""

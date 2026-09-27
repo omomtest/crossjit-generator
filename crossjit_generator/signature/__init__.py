@@ -1,0 +1,1 @@
+"""Stable optimization signatures."""

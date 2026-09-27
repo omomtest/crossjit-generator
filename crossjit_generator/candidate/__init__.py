@@ -1,0 +1,1 @@
+"""Legal optimization candidate model."""
