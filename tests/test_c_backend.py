@@ -8,7 +8,7 @@ import subprocess
 
 import pytest
 
-from crossjit_generator.backend.c import CBackend
+from crossjit_generator.backend.c import CBackend, generate_bundle
 from crossjit_generator.domains.elementwise import ElementwiseOptimizer
 from crossjit_generator.ir import (
     HostOperation,
@@ -165,3 +165,25 @@ def test_generated_artifacts_are_deterministic_and_dispatch_free():
         positions.append(position)
         start = position + len(operator)
     assert positions == sorted(positions)
+
+
+def test_bundle_is_deterministic_and_compiles(tmp_path):
+    candidates = tuple(_candidate(length) for length in range(2, 7))
+    first = generate_bundle(candidates)
+    second = generate_bundle(tuple(reversed(candidates)))
+    assert first == second
+    assert first.source.count("for (") == 5
+    assert first.header.count("crossjit_elem_fp64_contig_") == 5
+    assert '"kernels": [' in first.metadata
+    source = tmp_path / "generated_crossjit_kernels.c"
+    header = tmp_path / "generated_crossjit_kernels.h"
+    source.write_text(first.source)
+    header.write_text(first.header)
+    compiler = shutil.which("cc")
+    if compiler is None:
+        pytest.skip("C compiler unavailable")
+    subprocess.run([
+        compiler, "-std=c11", "-O3", "-Wall", "-Wextra", "-Werror",
+        "-ffp-contract=off", "-c", str(source), "-I", str(tmp_path),
+        "-o", str(tmp_path / "generated.o"),
+    ], check=True)
