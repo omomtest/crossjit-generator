@@ -138,6 +138,9 @@ class CBackend:
             value: f"input_{index}"
             for index, value in enumerate(ir.inputs)
         }
+        scalar_mask = next(
+            (int(item.value) for item in ir.specialization_attributes
+             if item.name == "scalar_mask"), 0)
         declarations = [
             f"    const double *const input_{index} = "
             f"(const double *)inputs[{index}];"
@@ -158,7 +161,9 @@ class CBackend:
                     raise CBackendError(
                         f"unknown candidate operand: {operand}")
                 operands.append(
-                    f"{name}[i]" if operand in ir.inputs else name)
+                    (f"{name}[0]" if scalar_mask &
+                     (1 << ir.inputs.index(operand)) else f"{name}[i]")
+                    if operand in ir.inputs else name)
             result_name = f"value_{index}"
             statements.append(
                 f"        const double {result_name} = "
