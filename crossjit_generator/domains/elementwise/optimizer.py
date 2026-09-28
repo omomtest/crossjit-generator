@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from crossjit_generator.candidate import Candidate, CostHints, RuntimeAssumption
 from crossjit_generator.ir import ElementwiseIR
+from crossjit_generator.iteration import IterationDescriptor
 
 
 class UnsupportedElementwiseIR(ValueError):
@@ -21,7 +22,10 @@ class ElementwiseOptimizer:
     _LAYOUTS = frozenset(("contiguous_same_shape",))
     _OPERATORS = frozenset(("add", "subtract", "multiply", "true_divide"))
 
-    def legal_candidates(self, ir: ElementwiseIR) -> tuple[Candidate, ...]:
+    def legal_candidates(
+        self, ir: ElementwiseIR, *,
+        iteration_descriptor: IterationDescriptor | None = None,
+    ) -> tuple[Candidate, ...]:
         if not isinstance(ir, ElementwiseIR):
             raise UnsupportedElementwiseIR("expected ElementwiseIR")
         if ir.dtype_class not in self._DTYPES:
@@ -30,6 +34,10 @@ class ElementwiseOptimizer:
         if ir.layout_class not in self._LAYOUTS:
             raise UnsupportedElementwiseIR(
                 f"unsupported layout class: {ir.layout_class}")
+        if (iteration_descriptor is not None and
+                len(iteration_descriptor.operands) != len(ir.inputs)):
+            raise UnsupportedElementwiseIR(
+                "iteration operand count does not match IR inputs")
         if not 2 <= len(ir.operations) <= 6:
             raise UnsupportedElementwiseIR(
                 "MVP requires two through six operations")
@@ -82,5 +90,6 @@ class ElementwiseOptimizer:
                 input_count=len(ir.inputs),
                 virtual_intermediate_count=len(ir.virtual_intermediates),
             ),
+            iteration_descriptor=iteration_descriptor,
         )
         return (candidate,)

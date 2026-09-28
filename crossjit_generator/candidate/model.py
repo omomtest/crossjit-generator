@@ -8,6 +8,7 @@ import json
 from typing import Any
 
 from crossjit_generator.ir import ElementwiseIR
+from crossjit_generator.iteration import IterationDescriptor
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -43,9 +44,10 @@ class Candidate:
     runtime_assumptions: tuple[RuntimeAssumption, ...]
     target_requirements: tuple[str, ...]
     cost_hints: CostHints
+    iteration_descriptor: IterationDescriptor | None = None
 
     def to_data(self) -> dict[str, Any]:
-        return {
+        data = {
             "cost_hints": self.cost_hints.to_data(),
             "domain": self.domain,
             "ir_hash": self.elementwise_ir.stable_hash(),
@@ -58,6 +60,14 @@ class Candidate:
             "schema_version": self.schema_version,
             "target_requirements": list(self.target_requirements),
         }
+        # Schema-v1 candidates predate IterationDescriptor.  Omitting the
+        # implicit legacy descriptor preserves every historical candidate
+        # hash and therefore the frozen GEN-AUTO registry/DecisionDB mapping.
+        if self.iteration_descriptor is not None:
+            data["iteration_descriptor"] = self.iteration_descriptor.to_data()
+            data["iteration_descriptor_hash"] = (
+                self.iteration_descriptor.stable_hash())
+        return data
 
     def serialize(self) -> str:
         return json.dumps(

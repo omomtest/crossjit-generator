@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from crossjit_generator.candidate import Candidate
+from crossjit_generator.iteration import (
+    IterationDescriptor, OperandAccessKind,
+)
 
 
 class CBackendError(ValueError):
@@ -116,6 +119,19 @@ class CBackend:
             raise CBackendError(f"unsupported dtype: {ir.dtype_class}")
         if ir.layout_class != "contiguous_same_shape":
             raise CBackendError(f"unsupported layout: {ir.layout_class}")
+        descriptor = candidate.iteration_descriptor
+        if descriptor is None:
+            scalar_mask = next(
+                (int(item.value) for item in ir.specialization_attributes
+                 if item.name == "scalar_mask"), 0)
+            descriptor = IterationDescriptor.contiguous_same_shape(
+                len(ir.inputs), scalar_mask)
+        if (len(descriptor.operands) != len(ir.inputs) or
+                any(item.access_kind not in (
+                    OperandAccessKind.CONTIGUOUS,
+                    OperandAccessKind.SCALAR,
+                ) for item in descriptor.operands)):
+            raise CBackendError("unsupported v1 iteration descriptor")
 
         signature_hash = candidate.stable_hash()
         symbol = f"crossjit_elem_fp64_contig_{signature_hash[:16]}"
