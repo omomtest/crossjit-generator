@@ -48,8 +48,6 @@ def generate_bundle(
 ) -> CBundle:
     """Combine independently deterministic kernels into one build artifact."""
 
-    if not candidates:
-        raise CBackendError("C bundle requires at least one candidate")
     backend = CBackend()
     artifacts = sorted(
         (backend.generate(candidate) for candidate in candidates),
