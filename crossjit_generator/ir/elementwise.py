@@ -206,6 +206,91 @@ class ElementwiseIR:
     def stable_hash(self) -> str:
         return hashlib.sha256(self.serialize().encode("ascii")).hexdigest()
 
+    @classmethod
+    def from_data(cls, data: Mapping[str, Any]) -> "ElementwiseIR":
+        """Reconstruct canonical IR without consulting Host or Provider state."""
+
+        if not isinstance(data, Mapping):
+            raise ElementwiseIRValidationError("ElementwiseIR data must be a mapping")
+        try:
+            operations = tuple(ElementwiseOperation(
+                node_id=item["node_id"],
+                operation_id=item["operation_id"],
+                operands=tuple(item["operands"]),
+                result=item["result"],
+                recipe_hash=item["recipe_hash"],
+                semantic_expression=dict(item["semantic_expression"]),
+                effects=dict(item["effects"]),
+                errors=dict(item["errors"]),
+            ) for item in data["operations"])
+            attributes = tuple(SpecializationAttribute(
+                item["name"], item["value"])
+                for item in data["specialization_attributes"])
+            ir = cls(
+                schema_version=int(data["schema_version"]),
+                provider=data["provider"],
+                host_semantic_proof_digest=data["host_semantic_proof_digest"],
+                provider_contract_digest=data["provider_contract_digest"],
+                inputs=tuple(data["inputs"]),
+                operations=operations,
+                outputs=tuple(data["outputs"]),
+                virtual_intermediates=tuple(data["virtual_intermediates"]),
+                materialized_values=tuple(data["materialized_values"]),
+                dtype_class=data["dtype_class"],
+                layout_class=data["layout_class"],
+                error_mode=data["error_mode"],
+                specialization_attributes=attributes,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ElementwiseIRValidationError(
+                f"malformed ElementwiseIR data: {error}") from error
+        _validate_replayed_ir(ir)
+        return ir
+
+
+def _validate_replayed_ir(ir: ElementwiseIR) -> None:
+    """Validate persisted IR topology without re-running semantic legality."""
+
+    if ir.schema_version != 1:
+        raise ElementwiseIRValidationError("unsupported ElementwiseIR schema")
+    _identifier(ir.provider, "Provider identity")
+    if not ir.host_semantic_proof_digest or not ir.provider_contract_digest:
+        raise ElementwiseIRValidationError("replayed IR requires proof digests")
+    _identifier(ir.dtype_class, "dtype class")
+    _identifier(ir.layout_class, "layout class")
+    _identifier(ir.error_mode, "error mode")
+    known = set()
+    for value in ir.inputs:
+        _identifier(value, "input")
+        if value in known:
+            raise ElementwiseIRValidationError("duplicate replay input")
+        known.add(value)
+    results = []
+    for operation in ir.operations:
+        _identifier(operation.node_id, "Host node identity")
+        _identifier(operation.operation_id, "operation identity")
+        _identifier(operation.result, "Host result identity")
+        if not operation.operands or any(value not in known
+                                         for value in operation.operands):
+            raise ElementwiseIRValidationError(
+                "replayed operation has an unknown dependency")
+        if operation.result in known:
+            raise ElementwiseIRValidationError("duplicate replay value")
+        if not isinstance(operation.recipe_hash, str) or not operation.recipe_hash:
+            raise ElementwiseIRValidationError("replayed recipe hash is required")
+        known.add(operation.result)
+        results.append(operation.result)
+    if not ir.inputs or not ir.operations or not ir.outputs:
+        raise ElementwiseIRValidationError("replayed region is empty")
+    if any(value not in known for value in ir.outputs):
+        raise ElementwiseIRValidationError("replayed output is not defined")
+    if set(ir.virtual_intermediates) & set(ir.materialized_values):
+        raise ElementwiseIRValidationError("replayed materialization overlaps")
+    if (set(ir.virtual_intermediates) | set(ir.materialized_values) !=
+            set(results)):
+        raise ElementwiseIRValidationError(
+            "replayed materialization does not partition results")
+
 
 def build_elementwise_ir(
     region: HostProvenRegion,
