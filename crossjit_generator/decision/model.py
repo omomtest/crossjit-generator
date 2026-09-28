@@ -331,10 +331,14 @@ class DecisionDB:
                          element_count: int) -> RuntimeDecision:
         lookup = self.lookup(signature, environment)
         if (lookup is None or lookup.record is None or
+                lookup.state is ArtifactDecision.STALE):
+            return RuntimeDecision.ORIGINAL
+        decision = lookup.record.profitability.decide(element_count)
+        if (decision is RuntimeDecision.GENERATED and
                 lookup.state not in (
                     ArtifactDecision.AUTO_SELECTED, ArtifactDecision.FORCED)):
             return RuntimeDecision.ORIGINAL
-        return lookup.record.profitability.decide(element_count)
+        return decision
 
     def to_data(self) -> dict[str, Any]:
         return {

@@ -116,3 +116,12 @@ def test_nonselected_artifact_states_reject_runtime_execution(state):
     rejected = replace(record(), artifact_decision=state)
     assert DecisionDB((rejected,)).runtime_decision(
         signature(), environment(), 4096) is RuntimeDecision.ORIGINAL
+
+
+def test_rejected_artifact_can_still_authorize_measured_generic_fallback():
+    generic = replace(
+        record(), artifact_decision=ArtifactDecision.AUTO_REJECTED,
+        profitability=ProfitabilityEnvelope((
+            point(16, 65536, RuntimeDecision.GENERIC_FALLBACK),)))
+    assert DecisionDB((generic,)).runtime_decision(
+        signature(), environment(), 4096) is RuntimeDecision.GENERIC_FALLBACK

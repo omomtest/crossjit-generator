@@ -4,7 +4,7 @@ import crossjit_generator
 
 
 def test_package_version_is_exposed():
-    assert crossjit_generator.__version__ == "0.1.0.dev0"
+    assert crossjit_generator.__version__ == "0.2.0"
 
 
 def test_generic_source_has_no_numpy_implementation_dependencies():
