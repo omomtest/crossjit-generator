@@ -334,6 +334,8 @@ class DecisionDB:
                 lookup.state is ArtifactDecision.STALE):
             return RuntimeDecision.ORIGINAL
         decision = lookup.record.profitability.decide(element_count)
+        if lookup.state is ArtifactDecision.DISABLED:
+            return RuntimeDecision.ORIGINAL
         if (decision is RuntimeDecision.GENERATED and
                 lookup.state not in (
                     ArtifactDecision.AUTO_SELECTED, ArtifactDecision.FORCED)):

@@ -125,3 +125,12 @@ def test_rejected_artifact_can_still_authorize_measured_generic_fallback():
             point(16, 65536, RuntimeDecision.GENERIC_FALLBACK),)))
     assert DecisionDB((generic,)).runtime_decision(
         signature(), environment(), 4096) is RuntimeDecision.GENERIC_FALLBACK
+
+
+def test_disabled_signature_cannot_authorize_generic_fallback():
+    disabled = replace(
+        record(), artifact_decision=ArtifactDecision.DISABLED,
+        profitability=ProfitabilityEnvelope((
+            point(16, 65536, RuntimeDecision.GENERIC_FALLBACK),)))
+    assert DecisionDB((disabled,)).runtime_decision(
+        signature(), environment(), 4096) is RuntimeDecision.ORIGINAL
