@@ -47,12 +47,10 @@ class ElementwiseOptimizer:
                 IterationRankClass.OUTER_INNER):
             raise UnsupportedElementwiseIR(
                 "inner-contiguous IR requires outer/inner descriptor")
-        if (iteration_descriptor is not None and
-                iteration_descriptor.iteration_rank_class is
-                IterationRankClass.OUTER_INNER and
-                ir.layout_class != "inner_contiguous"):
-            raise UnsupportedElementwiseIR(
-                "outer/inner descriptor requires inner-contiguous IR")
+        # Historical structural layout names are intentionally not used to
+        # select loop rank.  The Provider-owned descriptor is the execution
+        # authority, including for scalar/broadcast specializations whose
+        # structural signature remains ``contiguous_same_shape``.
         if not 2 <= len(ir.operations) <= 6:
             raise UnsupportedElementwiseIR(
                 "MVP requires two through six operations")

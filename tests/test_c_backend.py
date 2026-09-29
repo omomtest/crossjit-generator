@@ -274,6 +274,66 @@ def test_inner_contiguous_branched_kernel_is_structural():
     assert artifacts.source.index(" * ") < artifacts.source.rindex(" + ")
 
 
+def test_outer_inner_scalar_and_zero_stride_compile_and_execute(tmp_path):
+    compiler = shutil.which("cc")
+    if compiler is None:
+        pytest.skip("C compiler unavailable")
+    base = _candidate(2)
+    descriptor = IterationDescriptor(
+        1, IterationRankClass.OUTER_INNER, "runtime_outer_count",
+        "AFFINE_ROWS", "runtime_inner_extent",
+        (
+            OperandDescriptor(0, OperandAccessKind.CONTIGUOUS,
+                              "element_size", "runtime_outer_stride"),
+            OperandDescriptor(1, OperandAccessKind.SCALAR, 0, 0, "SCALAR"),
+            OperandDescriptor(2, OperandAccessKind.ZERO_STRIDE, 0,
+                              "runtime_outer_stride", "BROADCAST_INNER"),
+        ),
+        OutputDescriptor(
+            OperandAccessKind.CONTIGUOUS, "element_size",
+            "runtime_output_outer_stride", "FRESH_PROVIDER_OUTPUT"),
+    )
+    candidate = ElementwiseOptimizer().legal_candidates(
+        base.elementwise_ir, iteration_descriptor=descriptor)[0]
+    artifacts = CBackend().generate(candidate)
+    header_path, source_path, _ = artifacts.write(tmp_path)
+    library_path = tmp_path / "generated_scalar_zero.so"
+    subprocess.run([
+        compiler, "-std=c11", "-O3", "-Wall", "-Wextra", "-Werror",
+        "-ffp-contract=off", "-fPIC", "-shared", str(source_path),
+        "-I", str(header_path.parent), "-o", str(library_path),
+    ], check=True)
+    function = getattr(ctypes.CDLL(str(library_path)), artifacts.symbol)
+    function.argtypes = [
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_ssize_t),
+        ctypes.POINTER(ctypes.c_double), ctypes.c_size_t, ctypes.c_size_t,
+    ]
+    outer, inner, padded = 3, 7, 9
+    contiguous = array("d", (1 + i / 10 for i in range(outer * padded)))
+    scalar = array("d", (0.25,))
+    per_row = array("d", (2.0, 3.0, 4.0))
+    buffers = [
+        (ctypes.c_double * len(values)).from_buffer(values)
+        for values in (contiguous, scalar, per_row)
+    ]
+    pointers = (ctypes.c_void_p * 3)(
+        *(ctypes.cast(value, ctypes.c_void_p).value for value in buffers))
+    strides = (ctypes.c_ssize_t * 3)(
+        padded * ctypes.sizeof(ctypes.c_double), 0,
+        ctypes.sizeof(ctypes.c_double))
+    output = (ctypes.c_double * (outer * inner))()
+    function(pointers, strides, output, outer, inner)
+    expected = [
+        (contiguous[row * padded + column] + scalar[0]) * per_row[row]
+        for row in range(outer) for column in range(inner)
+    ]
+    assert list(output) == pytest.approx(expected, rel=1e-15, abs=0.0)
+    assert "input_1[0]" in artifacts.source
+    assert "input_2[0]" in artifacts.source
+    assert artifacts.source.count("for (") == 2
+
+
 def test_iteration_layout_specializes_execution_not_structural_signature():
     candidate = _candidate(2, inner_contiguous=True)
     signature = optimization_signature_from_ir(

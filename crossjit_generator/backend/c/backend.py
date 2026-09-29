@@ -133,6 +133,7 @@ class CBackend:
                 any(item.access_kind not in (
                     OperandAccessKind.CONTIGUOUS,
                     OperandAccessKind.SCALAR,
+                    OperandAccessKind.ZERO_STRIDE,
                 ) for item in descriptor.operands)):
             raise CBackendError("unsupported v1 iteration descriptor")
 
@@ -147,17 +148,29 @@ class CBackend:
         if outer_inner and candidate.iteration_descriptor is None:
             raise CBackendError(
                 "inner-contiguous lowering requires IterationDescriptor")
+        def supported_outer_inner_operand(item):
+            if item.access_kind is OperandAccessKind.CONTIGUOUS:
+                return (item.inner_stride == "element_size" and
+                        item.outer_stride == "runtime_outer_stride" and
+                        item.broadcast_relation == "NONE")
+            if item.access_kind is OperandAccessKind.SCALAR:
+                return (item.inner_stride == 0 and item.outer_stride == 0 and
+                        item.broadcast_relation == "SCALAR")
+            if item.access_kind is OperandAccessKind.ZERO_STRIDE:
+                return (item.inner_stride == 0 and item.outer_stride in (
+                            0, "runtime_outer_stride") and
+                        item.broadcast_relation != "NONE")
+            return False
+
         if outer_inner and (
                 descriptor.outer_shape_class != "AFFINE_ROWS" or
-                any(item.access_kind is not OperandAccessKind.CONTIGUOUS or
-                    item.inner_stride != "element_size" or
-                    item.outer_stride != "runtime_outer_stride"
+                any(not supported_outer_inner_operand(item)
                     for item in descriptor.operands) or
                 descriptor.output.inner_stride != "element_size" or
                 descriptor.output.outer_stride !=
                     "runtime_output_outer_stride"):
             raise CBackendError(
-                "PF4 requires affine rows with contiguous inner operands")
+                "outer/inner lowering requires affine supported operands")
 
         signature_hash = candidate.stable_hash()
         prefix = ("crossjit_elem_fp64_inner_contig_" if outer_inner else
@@ -213,8 +226,10 @@ class CBackend:
                     input_index = ir.inputs.index(operand)
                     access = descriptor.operands[input_index].access_kind
                     operands.append(
-                        f"{name}[0]" if access is OperandAccessKind.SCALAR
-                        else f"{name}[i]")
+                        f"{name}[0]" if access in (
+                            OperandAccessKind.SCALAR,
+                            OperandAccessKind.ZERO_STRIDE,
+                        ) else f"{name}[i]")
                 else:
                     operands.append(name)
             result_name = f"value_{index}"
