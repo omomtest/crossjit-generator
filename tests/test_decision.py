@@ -8,11 +8,15 @@ from crossjit_generator.decision import (
     DecisionDB,
     DecisionEnvironment,
     DecisionRecord,
+    ExecutionDecisionDB,
+    ExecutionDecisionRecord,
     MeasurementPoint,
     MeasurementProvenance,
     ProfitabilityEnvelope,
     RuntimeDecision,
 )
+from crossjit_generator.candidate import ExecutionSpecialization
+from crossjit_generator.iteration import IterationDescriptor
 from crossjit_generator.signature import OptimizationSignature, SignatureOperation
 
 
@@ -134,3 +138,73 @@ def test_disabled_signature_cannot_authorize_generic_fallback():
             point(16, 65536, RuntimeDecision.GENERIC_FALLBACK),)))
     assert DecisionDB((disabled,)).runtime_decision(
         signature(), environment(), 4096) is RuntimeDecision.ORIGINAL
+
+
+def execution_specialization():
+    return ExecutionSpecialization(
+        1, signature().stable_hash(), "outer_inner_compiler_visible_loop",
+        IterationDescriptor.contiguous_same_shape(3),
+    )
+
+
+def execution_record():
+    return ExecutionDecisionRecord(
+        signature(), execution_specialization(), environment(),
+        ArtifactDecision.AUTO_SELECTED,
+        MeasurementProvenance(
+            "generic_signature_microbenchmark", 5, 7,
+            "2026-09-29T00:00:00Z"),
+        ProfitabilityEnvelope((
+            point(16, 1024, RuntimeDecision.ORIGINAL),
+            point(1025, 65536, RuntimeDecision.GENERATED),
+        )),
+        "c" * 64, 0.99,
+        "descriptor-specific generated path is profitable",
+    )
+
+
+def execution_database(records=None):
+    return ExecutionDecisionDB(
+        (execution_record(),) if records is None else records,
+        profile_identity_hash="d" * 64,
+        candidate_universe_hash="e" * 64,
+    )
+
+
+def test_execution_decision_db_is_specialization_specific_and_deterministic():
+    database = execution_database()
+    restored = ExecutionDecisionDB.from_data(
+        json.loads(database.serialize()))
+    assert restored.serialize() == database.serialize()
+    assert restored.runtime_decision(
+        execution_specialization(), environment(), 4096
+    ) is RuntimeDecision.GENERATED
+
+    changed = replace(
+        execution_specialization(),
+        iteration_descriptor=IterationDescriptor.contiguous_same_shape(
+            3, scalar_mask=1),
+    )
+    assert changed.structural_signature_hash == signature().stable_hash()
+    assert restored.runtime_decision(
+        changed, environment(), 4096) is RuntimeDecision.ORIGINAL
+
+
+def test_execution_decision_db_rejects_structural_identity_mismatch():
+    with pytest.raises(
+            ValueError, match="changed structural signature"):
+        replace(
+            execution_record(),
+            specialization=replace(
+                execution_specialization(),
+                structural_signature_hash="f" * 64),
+        )
+
+
+def test_execution_decision_db_stale_environment_fails_closed():
+    stale = replace(environment(), compiler_flags=("-O2",))
+    database = execution_database()
+    assert database.lookup(
+        execution_specialization(), stale).state is ArtifactDecision.STALE
+    assert database.runtime_decision(
+        execution_specialization(), stale, 4096) is RuntimeDecision.ORIGINAL

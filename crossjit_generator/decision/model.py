@@ -8,6 +8,7 @@ import hashlib
 import json
 from typing import Any, Iterable, Mapping
 
+from crossjit_generator.candidate import ExecutionSpecialization
 from crossjit_generator.signature import OptimizationSignature
 
 
@@ -296,7 +297,7 @@ class DecisionRecord:
 @dataclass(frozen=True, slots=True)
 class DecisionLookup:
     state: ArtifactDecision
-    record: DecisionRecord | None
+    record: DecisionRecord | ExecutionDecisionRecord | None
     reason: str
 
 
@@ -358,3 +359,168 @@ class DecisionDB:
                 data["schema_version"] != 1):
             raise DecisionValidationError("unsupported DecisionDB schema")
         return cls(DecisionRecord.from_data(item) for item in data["records"])
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionDecisionRecord:
+    """Profitability for one descriptor-derived execution specialization.
+
+    The structural signature remains embedded and independently validated;
+    layout/iteration facts enter only through ``ExecutionSpecialization``.
+    """
+
+    signature: OptimizationSignature
+    specialization: ExecutionSpecialization
+    environment: DecisionEnvironment
+    artifact_decision: ArtifactDecision
+    provenance: MeasurementProvenance
+    profitability: ProfitabilityEnvelope
+    artifact_hash: str | None
+    confidence: float
+    reason: str
+
+    def __post_init__(self) -> None:
+        if (self.specialization.structural_signature_hash !=
+                self.signature.stable_hash()):
+            raise DecisionValidationError(
+                "execution specialization changed structural signature")
+        if self.signature.provider != self.environment.provider:
+            raise DecisionValidationError("Provider environment mismatch")
+        if (self.signature.provider_abi_version !=
+                self.environment.provider_abi_version):
+            raise DecisionValidationError("Provider ABI environment mismatch")
+        if tuple(operation.recipe_hash for operation in
+                 self.signature.operations) != self.environment.recipe_hashes:
+            raise DecisionValidationError("recipe environment mismatch")
+        if self.artifact_hash is not None:
+            _sha256(self.artifact_hash, "artifact hash")
+        if not 0 <= self.confidence <= 1 or not self.reason:
+            raise DecisionValidationError("decision confidence/reason required")
+
+    def key(self) -> str:
+        return (f"{self.specialization.stable_hash()}:"
+                f"{self.environment.stable_hash()}")
+
+    def to_data(self) -> dict[str, Any]:
+        return {
+            "artifact_decision": self.artifact_decision.value,
+            "artifact_hash": self.artifact_hash,
+            "confidence": self.confidence,
+            "environment": self.environment.to_data(),
+            "profitability": self.profitability.to_data(),
+            "provenance": self.provenance.to_data(),
+            "reason": self.reason,
+            "signature": self.signature.to_data(),
+            "signature_hash": self.signature.stable_hash(),
+            "specialization": self.specialization.to_data(),
+            "specialization_hash": self.specialization.stable_hash(),
+        }
+
+    @classmethod
+    def from_data(cls, data: Mapping[str, Any]) -> "ExecutionDecisionRecord":
+        signature = OptimizationSignature.from_data(data["signature"])
+        specialization = ExecutionSpecialization.from_data(
+            data["specialization"])
+        if signature.stable_hash() != data["signature_hash"]:
+            raise DecisionValidationError(
+                "execution DecisionDB signature hash mismatch")
+        if specialization.stable_hash() != data["specialization_hash"]:
+            raise DecisionValidationError(
+                "execution DecisionDB specialization hash mismatch")
+        return cls(
+            signature=signature,
+            specialization=specialization,
+            environment=DecisionEnvironment.from_data(data["environment"]),
+            artifact_decision=ArtifactDecision(data["artifact_decision"]),
+            provenance=MeasurementProvenance.from_data(data["provenance"]),
+            profitability=ProfitabilityEnvelope.from_data(
+                data["profitability"]),
+            artifact_hash=data["artifact_hash"],
+            confidence=data["confidence"],
+            reason=data["reason"],
+        )
+
+
+class ExecutionDecisionDB:
+    """DecisionDB keyed by execution specialization and environment."""
+
+    SCHEMA_VERSION = 1
+
+    def __init__(
+        self, records: Iterable[ExecutionDecisionRecord] = (), *,
+        profile_identity_hash: str,
+        candidate_universe_hash: str,
+    ) -> None:
+        self.profile_identity_hash = _sha256(
+            profile_identity_hash, "profile identity hash")
+        self.candidate_universe_hash = _sha256(
+            candidate_universe_hash, "candidate universe hash")
+        self._records: dict[str, ExecutionDecisionRecord] = {}
+        for record in records:
+            if record.key() in self._records:
+                raise DecisionValidationError(
+                    "duplicate execution DecisionDB record")
+            self._records[record.key()] = record
+
+    def records(self) -> tuple[ExecutionDecisionRecord, ...]:
+        return tuple(self._records[key] for key in sorted(self._records))
+
+    def lookup(
+        self, specialization: ExecutionSpecialization,
+        environment: DecisionEnvironment,
+    ) -> DecisionLookup | None:
+        key = f"{specialization.stable_hash()}:{environment.stable_hash()}"
+        exact = self._records.get(key)
+        if exact is not None:
+            return DecisionLookup(exact.artifact_decision, exact, "exact match")
+        if any(record.specialization.stable_hash() ==
+               specialization.stable_hash()
+               for record in self._records.values()):
+            return DecisionLookup(
+                ArtifactDecision.STALE, None,
+                "dependency/environment fingerprint changed")
+        return None
+
+    def runtime_decision(
+        self, specialization: ExecutionSpecialization,
+        environment: DecisionEnvironment, element_count: int,
+    ) -> RuntimeDecision:
+        lookup = self.lookup(specialization, environment)
+        if (lookup is None or lookup.record is None or
+                lookup.state in (ArtifactDecision.STALE,
+                                 ArtifactDecision.DISABLED)):
+            return RuntimeDecision.ORIGINAL
+        decision = lookup.record.profitability.decide(element_count)
+        if (decision is RuntimeDecision.GENERATED and
+                lookup.state not in (
+                    ArtifactDecision.AUTO_SELECTED, ArtifactDecision.FORCED)):
+            return RuntimeDecision.ORIGINAL
+        return decision
+
+    def to_data(self) -> dict[str, Any]:
+        return {
+            "candidate_universe_hash": self.candidate_universe_hash,
+            "profile_identity_hash": self.profile_identity_hash,
+            "records": [record.to_data() for record in self.records()],
+            "schema_version": self.SCHEMA_VERSION,
+        }
+
+    def serialize(self) -> str:
+        return json.dumps(
+            self.to_data(), ensure_ascii=True, indent=2, sort_keys=True) + "\n"
+
+    @classmethod
+    def from_data(cls, data: Mapping[str, Any]) -> "ExecutionDecisionDB":
+        expected = {
+            "candidate_universe_hash", "profile_identity_hash", "records",
+            "schema_version",
+        }
+        if set(data) != expected or data["schema_version"] != 1:
+            raise DecisionValidationError(
+                "unsupported execution DecisionDB schema")
+        return cls(
+            (ExecutionDecisionRecord.from_data(item)
+             for item in data["records"]),
+            profile_identity_hash=data["profile_identity_hash"],
+            candidate_universe_hash=data["candidate_universe_hash"],
+        )

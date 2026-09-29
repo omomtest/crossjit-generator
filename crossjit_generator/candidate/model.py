@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Any
+from typing import Any, Mapping
 
 from crossjit_generator.ir import ElementwiseIR
 from crossjit_generator.iteration import IterationDescriptor
@@ -78,6 +78,22 @@ class ExecutionSpecialization:
 
     def stable_hash(self) -> str:
         return hashlib.sha256(self.serialize().encode("ascii")).hexdigest()
+
+    @classmethod
+    def from_data(cls, data: Mapping[str, Any]) -> "ExecutionSpecialization":
+        expected = {
+            "iteration_descriptor", "iteration_descriptor_hash",
+            "lowering_form", "schema_version", "structural_signature_hash",
+        }
+        if set(data) != expected:
+            raise ValueError("unexpected execution-specialization fields")
+        descriptor = IterationDescriptor.from_data(
+            data["iteration_descriptor"])
+        if descriptor.stable_hash() != data["iteration_descriptor_hash"]:
+            raise ValueError("IterationDescriptor hash mismatch")
+        return cls(
+            data["schema_version"], data["structural_signature_hash"],
+            data["lowering_form"], descriptor)
 
 
 @dataclass(frozen=True, slots=True)

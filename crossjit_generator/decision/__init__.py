@@ -6,6 +6,8 @@ from .model import (
     DecisionEnvironment,
     DecisionLookup,
     DecisionRecord,
+    ExecutionDecisionDB,
+    ExecutionDecisionRecord,
     MeasurementPoint,
     MeasurementProvenance,
     ProfitabilityEnvelope,
@@ -14,6 +16,7 @@ from .model import (
 
 __all__ = [
     "ArtifactDecision", "DecisionDB", "DecisionEnvironment",
-    "DecisionLookup", "DecisionRecord", "MeasurementPoint",
+    "DecisionLookup", "DecisionRecord", "ExecutionDecisionDB",
+    "ExecutionDecisionRecord", "MeasurementPoint",
     "MeasurementProvenance", "ProfitabilityEnvelope", "RuntimeDecision",
 ]
