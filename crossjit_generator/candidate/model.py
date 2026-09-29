@@ -35,6 +35,52 @@ class CostHints:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionSpecialization:
+    """Descriptor-derived execution/profitability identity.
+
+    This identity is deliberately separate from OptimizationSignature.  The
+    latter keeps the existing structural region semantics, while this value
+    distinguishes generated loop shapes whose layout can change code shape or
+    profitability.
+    """
+
+    schema_version: int
+    structural_signature_hash: str
+    lowering_form: str
+    iteration_descriptor: IterationDescriptor
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("unsupported execution-specialization schema")
+        if (len(self.structural_signature_hash) != 64 or
+                any(character not in "0123456789abcdef"
+                    for character in self.structural_signature_hash)):
+            raise ValueError("invalid structural signature hash")
+        if not self.lowering_form:
+            raise ValueError("execution specialization needs a lowering form")
+        if not isinstance(self.iteration_descriptor, IterationDescriptor):
+            raise ValueError("execution specialization needs a descriptor")
+
+    def to_data(self) -> dict[str, Any]:
+        return {
+            "iteration_descriptor": self.iteration_descriptor.to_data(),
+            "iteration_descriptor_hash":
+                self.iteration_descriptor.stable_hash(),
+            "lowering_form": self.lowering_form,
+            "schema_version": self.schema_version,
+            "structural_signature_hash": self.structural_signature_hash,
+        }
+
+    def serialize(self) -> str:
+        return json.dumps(
+            self.to_data(), ensure_ascii=True, sort_keys=True,
+            separators=(",", ":"))
+
+    def stable_hash(self) -> str:
+        return hashlib.sha256(self.serialize().encode("ascii")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
 class Candidate:
     schema_version: int
     domain: str
@@ -76,3 +122,17 @@ class Candidate:
 
     def stable_hash(self) -> str:
         return hashlib.sha256(self.serialize().encode("ascii")).hexdigest()
+
+    def execution_specialization(
+        self, structural_signature_hash: str,
+    ) -> ExecutionSpecialization:
+        descriptor = self.iteration_descriptor
+        if descriptor is None:
+            scalar_mask = next(
+                (int(item.value)
+                 for item in self.elementwise_ir.specialization_attributes
+                 if item.name == "scalar_mask"), 0)
+            descriptor = IterationDescriptor.contiguous_same_shape(
+                len(self.elementwise_ir.inputs), scalar_mask)
+        return ExecutionSpecialization(
+            1, structural_signature_hash, self.lowering_form, descriptor)

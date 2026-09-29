@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from crossjit_generator.candidate import Candidate, CostHints, RuntimeAssumption
 from crossjit_generator.ir import ElementwiseIR
-from crossjit_generator.iteration import IterationDescriptor
+from crossjit_generator.iteration import (
+    IterationDescriptor,
+    IterationRankClass,
+)
 
 
 class UnsupportedElementwiseIR(ValueError):
@@ -19,7 +22,7 @@ class UnsupportedElementwiseIR(ValueError):
 class ElementwiseOptimizer:
     VERSION = "1"
     _DTYPES = frozenset(("fp64", "float64"))
-    _LAYOUTS = frozenset(("contiguous_same_shape",))
+    _LAYOUTS = frozenset(("contiguous_same_shape", "inner_contiguous"))
     _OPERATORS = frozenset(("add", "subtract", "multiply", "true_divide"))
 
     def legal_candidates(
@@ -38,6 +41,18 @@ class ElementwiseOptimizer:
                 len(iteration_descriptor.operands) != len(ir.inputs)):
             raise UnsupportedElementwiseIR(
                 "iteration operand count does not match IR inputs")
+        if ir.layout_class == "inner_contiguous" and (
+                iteration_descriptor is None or
+                iteration_descriptor.iteration_rank_class is not
+                IterationRankClass.OUTER_INNER):
+            raise UnsupportedElementwiseIR(
+                "inner-contiguous IR requires outer/inner descriptor")
+        if (iteration_descriptor is not None and
+                iteration_descriptor.iteration_rank_class is
+                IterationRankClass.OUTER_INNER and
+                ir.layout_class != "inner_contiguous"):
+            raise UnsupportedElementwiseIR(
+                "outer/inner descriptor requires inner-contiguous IR")
         if not 2 <= len(ir.operations) <= 6:
             raise UnsupportedElementwiseIR(
                 "MVP requires two through six operations")
@@ -77,12 +92,19 @@ class ElementwiseOptimizer:
             for attribute in ir.specialization_attributes
         )
         assumptions.sort(key=lambda item: item.name)
+        lowering_form = (
+            "outer_inner_compiler_visible_loop"
+            if iteration_descriptor is not None and
+            iteration_descriptor.iteration_rank_class is
+            IterationRankClass.OUTER_INNER
+            else "single_compiler_visible_loop"
+        )
         candidate = Candidate(
             schema_version=1,
             domain="elementwise",
             elementwise_ir=ir,
             operation_signature=tuple(signature),
-            lowering_form="single_compiler_visible_loop",
+            lowering_form=lowering_form,
             runtime_assumptions=tuple(assumptions),
             target_requirements=("c11", "strict_operation_order"),
             cost_hints=CostHints(
