@@ -1,0 +1,344 @@
+/*
+ * Executes closed two-node scalar/array programs without interpreting a node
+ * switch for every element.  The first node must add two live-ins and the
+ * second must add or multiply that virtual result by a third live-in.
+ */
+#define CJ_LINEAR_PAIR_CASES(FIRST_OPERATOR, SECOND_OPERATOR)         \
+    switch (linear_scalar_mask) {                                           \
+        case 0:                                                             \
+            for (CJ_INDEX_TYPE i = 0; i < pair_size; i++)                       \
+                pair_out[i] = (first_data[i] FIRST_OPERATOR second_data[i]) SECOND_OPERATOR \
+                         third_data[i];                                     \
+            break;                                                          \
+        case 1:                                                             \
+            for (CJ_INDEX_TYPE i = 0; i < pair_size; i++)                       \
+                pair_out[i] = (first_data[0] FIRST_OPERATOR second_data[i]) SECOND_OPERATOR \
+                         third_data[i];                                     \
+            break;                                                          \
+        case 2:                                                             \
+            for (CJ_INDEX_TYPE i = 0; i < pair_size; i++)                       \
+                pair_out[i] = (first_data[i] FIRST_OPERATOR second_data[0]) SECOND_OPERATOR \
+                         third_data[i];                                     \
+            break;                                                          \
+        case 3:                                                             \
+            for (CJ_INDEX_TYPE i = 0; i < pair_size; i++)                       \
+                pair_out[i] = (first_data[0] FIRST_OPERATOR second_data[0]) SECOND_OPERATOR \
+                         third_data[i];                                     \
+            break;                                                          \
+        case 4:                                                             \
+            for (CJ_INDEX_TYPE i = 0; i < pair_size; i++)                       \
+                pair_out[i] = (first_data[i] FIRST_OPERATOR second_data[i]) SECOND_OPERATOR \
+                         third_data[0];                                     \
+            break;                                                          \
+        case 5:                                                             \
+            for (CJ_INDEX_TYPE i = 0; i < pair_size; i++)                       \
+                pair_out[i] = (first_data[0] FIRST_OPERATOR second_data[i]) SECOND_OPERATOR \
+                         third_data[0];                                     \
+            break;                                                          \
+        case 6:                                                             \
+            for (CJ_INDEX_TYPE i = 0; i < pair_size; i++)                       \
+                pair_out[i] = (first_data[i] FIRST_OPERATOR second_data[0]) SECOND_OPERATOR \
+                         third_data[0];                                     \
+            break;                                                          \
+        default:                                                            \
+            for (CJ_INDEX_TYPE i = 0; i < pair_size; i++)                       \
+                pair_out[i] = (first_data[0] FIRST_OPERATOR second_data[0]) SECOND_OPERATOR \
+                         third_data[0];                                     \
+            break;                                                          \
+    }
+
+#define CJ_DISPATCH_LINEAR_PAIR()                                     \
+    do {                                                                    \
+        if (pair_kind == 1) {                                               \
+            if (nodes[1].op == CJ_OP_ADD) {                \
+                CJ_LINEAR_PAIR_CASES(+, +);                           \
+            }                                                               \
+            else {                                                          \
+                CJ_LINEAR_PAIR_CASES(+, *);                           \
+            }                                                               \
+        }                                                                   \
+        else if (pair_kind == 2) {                                          \
+            CJ_LINEAR_PAIR_CASES(*, -);                               \
+        }                                                                   \
+        else {                                                              \
+            CJ_LINEAR_PAIR_CASES(-, *);                               \
+        }                                                                   \
+    } while (0)
+
+@EVALUATORS@
+
+/* Instantiate fixed-width chunk interpreters for each supported storage type. */
+#define DEFINE_CHUNK_KERNEL(TYPE, NAME, EVAL)                               \
+static int                                                                 \
+cj_chunk_##NAME(                                                      \
+    const CjKernelNode *nodes, uint8_t node_count,               \
+    uint8_t input_count, uint8_t output_slot, const void *const *inputs,    \
+    const CJ_INDEX_TYPE *strides, TYPE *out, CJ_INDEX_TYPE size)                     \
+{                                                                           \
+    TYPE slots[CJ_MAX_SLOTS][8];                               \
+    for (CJ_INDEX_TYPE base = 0; base < size; base += 8) {                      \
+        int lanes = (int)((size - base) < 8 ? size - base : 8);           \
+        for (uint8_t input = 0; input < input_count; input++) {            \
+            const char *source = (const char *)inputs[input];              \
+            for (int lane = 0; lane < lanes; lane++) {                     \
+                slots[input][lane] = *(const TYPE *)(source +              \
+                    (base + lane) * strides[input]);                       \
+            }                                                               \
+        }                                                                   \
+        CJ_FIXED_NODES(EVAL, TYPE, NAME);                       \
+        for (int lane = 0; lane < lanes; lane++) {                         \
+            out[base + lane] = slots[output_slot][lane];                   \
+        }                                                                   \
+    }                                                                       \
+    return 1;                                                               \
+}
+
+
+@CHUNK_INSTANCES@
+
+#define CJ_TRY_PAIR_FAST_PATH(TYPE)                                   \
+    do {                                                                    \
+        int pair_kind = 0;                                                  \
+        if (node_count == 2 &&                                              \
+            nodes[0].left < input_count && nodes[0].right < input_count && \
+            nodes[0].output == input_count) {                              \
+            uint8_t third;                                                  \
+            int virtual_on_left = 0;                                       \
+            if (nodes[1].left == nodes[0].output &&                        \
+                nodes[1].right < input_count) {                            \
+                third = nodes[1].right;                                    \
+                virtual_on_left = 1;                                       \
+            }                                                               \
+            else if (nodes[1].right == nodes[0].output &&                  \
+                     nodes[1].left < input_count) {                         \
+                third = nodes[1].left;                                     \
+            }                                                               \
+            else {                                                          \
+                break;                                                      \
+            }                                                               \
+            if (nodes[0].op == CJ_OP_ADD &&                \
+                (nodes[1].op == CJ_OP_ADD ||               \
+                 nodes[1].op == CJ_OP_MULTIPLY)) {         \
+                pair_kind = 1;                                             \
+            }                                                               \
+            else if (nodes[0].op == CJ_OP_MULTIPLY &&      \
+                     nodes[1].op == CJ_OP_SUBTRACT &&      \
+                     virtual_on_left) {                                    \
+                pair_kind = 2;                                             \
+            }                                                               \
+            else if (nodes[0].op == CJ_OP_SUBTRACT &&      \
+                     nodes[1].op == CJ_OP_MULTIPLY) {       \
+                pair_kind = 3;                                             \
+            }                                                               \
+            if (pair_kind == 0) {                                          \
+                break;                                                      \
+            }                                                               \
+            CJ_INDEX_TYPE first_stride = input_strides[nodes[0].left][0];       \
+            CJ_INDEX_TYPE second_stride = input_strides[nodes[0].right][0];     \
+            CJ_INDEX_TYPE third_stride = input_strides[third][0];                \
+            if (ndim == 1 &&                                                \
+                (first_stride == 0 || first_stride == (CJ_INDEX_TYPE)sizeof(TYPE)) && \
+                (second_stride == 0 || second_stride == (CJ_INDEX_TYPE)sizeof(TYPE)) && \
+                (third_stride == 0 || third_stride == (CJ_INDEX_TYPE)sizeof(TYPE))) { \
+                const TYPE *first_data = inputs[nodes[0].left];             \
+                const TYPE *second_data = inputs[nodes[0].right];           \
+                const TYPE *third_data = inputs[third];                     \
+                uint8_t linear_scalar_mask =                                \
+                    (first_stride == 0) | ((second_stride == 0) << 1) |     \
+                    ((third_stride == 0) << 2);                             \
+                TYPE *pair_out = out;                                      \
+                CJ_INDEX_TYPE pair_size = size;                                 \
+                CJ_DISPATCH_LINEAR_PAIR();                            \
+                return 1;                                                   \
+            }                                                               \
+            int inner_axis = (int)ndim - 1;                                \
+            if (ndim > 1 &&                                                 \
+                (input_strides[nodes[0].left][inner_axis] == 0 ||          \
+                 input_strides[nodes[0].left][inner_axis] ==               \
+                    (CJ_INDEX_TYPE)sizeof(TYPE)) &&                              \
+                (input_strides[nodes[0].right][inner_axis] == 0 ||         \
+                 input_strides[nodes[0].right][inner_axis] ==              \
+                    (CJ_INDEX_TYPE)sizeof(TYPE)) &&                              \
+                (input_strides[third][inner_axis] == 0 ||                  \
+                 input_strides[third][inner_axis] ==                       \
+                    (CJ_INDEX_TYPE)sizeof(TYPE))) {                              \
+                CJ_INDEX_TYPE pair_size = dimensions[inner_axis];               \
+                CJ_INDEX_TYPE outer_size = pair_size == 0 ? 0 : size / pair_size; \
+                uint8_t linear_scalar_mask =                               \
+                    (input_strides[nodes[0].left][inner_axis] == 0) |      \
+                    ((input_strides[nodes[0].right][inner_axis] == 0) << 1) | \
+                    ((input_strides[third][inner_axis] == 0) << 2);        \
+                for (CJ_INDEX_TYPE outer = 0; outer < outer_size; outer++) {    \
+                    const TYPE *first_data = (const TYPE *)((const char *) \
+                        inputs[nodes[0].left] + offsets[nodes[0].left]);   \
+                    const TYPE *second_data = (const TYPE *)((const char *)\
+                        inputs[nodes[0].right] + offsets[nodes[0].right]); \
+                    const TYPE *third_data = (const TYPE *)((const char *) \
+                        inputs[third] + offsets[third]);                    \
+                    TYPE *pair_out = out + outer * pair_size;              \
+                    CJ_DISPATCH_LINEAR_PAIR();                        \
+                    for (int axis = inner_axis - 1; axis >= 0; axis--) {   \
+                        coordinates[axis]++;                               \
+                        for (uint8_t input = 0; input < input_count; input++) { \
+                            offsets[input] += input_strides[input][axis];   \
+                        }                                                   \
+                        if (coordinates[axis] < dimensions[axis]) {        \
+                            break;                                         \
+                        }                                                   \
+                        coordinates[axis] = 0;                             \
+                        for (uint8_t input = 0; input < input_count; input++) { \
+                            offsets[input] -= dimensions[axis] *           \
+                                input_strides[input][axis];                \
+                        }                                                   \
+                    }                                                       \
+                }                                                           \
+                return 1;                                                   \
+            }                                                               \
+            for (CJ_INDEX_TYPE index = 0; index < size; index++) {              \
+                TYPE left = *(const TYPE *)((const char *)                 \
+                    inputs[nodes[0].left] + offsets[nodes[0].left]);       \
+                TYPE right = *(const TYPE *)((const char *)                \
+                    inputs[nodes[0].right] + offsets[nodes[0].right]);     \
+                TYPE tail = *(const TYPE *)((const char *)                 \
+                    inputs[third] + offsets[third]);                        \
+                TYPE intermediate = pair_kind == 1 ? left + right :        \
+                    (pair_kind == 2 ? left * right : left - right);         \
+                TYPE final_left = virtual_on_left ? intermediate : tail;   \
+                TYPE final_right = virtual_on_left ? tail : intermediate;  \
+                out[index] = nodes[1].op == CJ_OP_ADD ?     \
+                    final_left + final_right :                             \
+                    (nodes[1].op == CJ_OP_SUBTRACT ?        \
+                        final_left - final_right :                         \
+                        final_left * final_right);                         \
+                if (ndim == 1) {                                           \
+                    for (uint8_t input = 0; input < input_count; input++) {\
+                        offsets[input] += input_strides[input][0];          \
+                    }                                                       \
+                    continue;                                              \
+                }                                                           \
+                for (int axis = (int)ndim - 1; axis >= 0; axis--) {        \
+                    coordinates[axis]++;                                   \
+                    for (uint8_t input = 0; input < input_count; input++) {\
+                        offsets[input] += input_strides[input][axis];       \
+                    }                                                       \
+                    if (coordinates[axis] < dimensions[axis]) {            \
+                        break;                                             \
+                    }                                                       \
+                    coordinates[axis] = 0;                                 \
+                    for (uint8_t input = 0; input < input_count; input++) {\
+                        offsets[input] -= dimensions[axis] *               \
+                            input_strides[input][axis];                    \
+                    }                                                       \
+                }                                                           \
+            }                                                               \
+            return 1;                                                       \
+        }                                                                   \
+    } while (0)
+
+/* Dispatches contiguous inner dimensions to the generated chunked loops. */
+#define CJ_TRY_CHUNK_FAST_PATH(TYPE, NAME)                            \
+    do {                                                                    \
+        int inner_axis = (int)ndim - 1;                                    \
+        int chunkable = inner_axis >= 0;                                   \
+        CJ_INDEX_TYPE inner_strides[CJ_MAX_INPUTS];                 \
+        const void *row_inputs[CJ_MAX_INPUTS];                 \
+        for (uint8_t input = 0; input < input_count && chunkable; input++) { \
+            inner_strides[input] = input_strides[input][inner_axis];       \
+            if (inner_strides[input] != 0 &&                               \
+                inner_strides[input] != (CJ_INDEX_TYPE)sizeof(TYPE)) {          \
+                chunkable = 0;                                             \
+            }                                                               \
+        }                                                                   \
+        if (!chunkable) {                                                   \
+            break;                                                          \
+        }                                                                   \
+        if (ndim == 1) {                                                    \
+            return cj_chunk_##NAME(                                  \
+                nodes, node_count, input_count, output_slot, inputs,       \
+                inner_strides, out, size);                                 \
+        }                                                                   \
+        CJ_INDEX_TYPE inner_size = dimensions[inner_axis];                      \
+        if (inner_size == 0) {                                              \
+            return 1;                                                       \
+        }                                                                   \
+        CJ_INDEX_TYPE outer_size = size / inner_size;                           \
+        for (CJ_INDEX_TYPE outer = 0; outer < outer_size; outer++) {            \
+            for (uint8_t input = 0; input < input_count; input++) {        \
+                row_inputs[input] = (const char *)inputs[input] +          \
+                    offsets[input];                                        \
+            }                                                               \
+            if (!cj_chunk_##NAME(                                    \
+                    nodes, node_count, input_count, output_slot,           \
+                    row_inputs, inner_strides, out + outer * inner_size,   \
+                    inner_size)) {                                         \
+                return 0;                                                   \
+            }                                                               \
+            for (int axis = inner_axis - 1; axis >= 0; axis--) {           \
+                coordinates[axis]++;                                       \
+                for (uint8_t input = 0; input < input_count; input++) {    \
+                    offsets[input] += input_strides[input][axis];          \
+                }                                                           \
+                if (coordinates[axis] < dimensions[axis]) {                \
+                    break;                                                  \
+                }                                                           \
+                coordinates[axis] = 0;                                     \
+                for (uint8_t input = 0; input < input_count; input++) {    \
+                    offsets[input] -= dimensions[axis] *                   \
+                        input_strides[input][axis];                         \
+                }                                                           \
+            }                                                               \
+        }                                                                   \
+        return 1;                                                           \
+    } while (0)
+
+/* Instantiate the complete strided drivers.  Integer drivers use unsigned
+ * storage so add/subtract/multiply retain modular wraparound. */
+#define DEFINE_KERNEL(TYPE, NAME, EVAL)                                      \
+static int                                                                  \
+cj_kernel_##NAME(                                                     \
+    const CjKernelNode *nodes, uint8_t node_count,               \
+    uint8_t input_count, uint16_t scalar_mask, uint8_t output_slot,         \
+    const void *const *inputs,                                               \
+    const CJ_INDEX_TYPE input_strides[][CJ_MAX_RANK], uint8_t ndim,              \
+    const CJ_INDEX_TYPE *dimensions, void *output, CJ_INDEX_TYPE size)                \
+{                                                                           \
+    TYPE slots[CJ_MAX_SLOTS];                                   \
+    TYPE *restrict out = (TYPE *)output;                                     \
+    CJ_INDEX_TYPE coordinates[CJ_MAX_RANK] = {0};                                \
+    CJ_INDEX_TYPE offsets[CJ_MAX_INPUTS] = {0};                      \
+    @TRY_PAIR@                                      \
+    CJ_TRY_CHUNK_FAST_PATH(TYPE, NAME);                               \
+    for (CJ_INDEX_TYPE index = 0; index < size; index++) {                       \
+        for (uint8_t input = 0; input < input_count; input++) {             \
+            const char *address = (const char *)inputs[input] +             \
+                offsets[input];                                             \
+            slots[input] = *(const TYPE *)address;                          \
+        }                                                                   \
+        CJ_FIXED_NODES(EVAL, TYPE, NAME); \
+        out[index] = slots[output_slot];                                    \
+        if (ndim == 1) {                                                    \
+            for (uint8_t input = 0; input < input_count; input++) {         \
+                offsets[input] += input_strides[input][0];                  \
+            }                                                               \
+            continue;                                                       \
+        }                                                                   \
+        for (int axis = (int)ndim - 1; axis >= 0; axis--) {                 \
+            coordinates[axis]++;                                            \
+            for (uint8_t input = 0; input < input_count; input++) {         \
+                offsets[input] += input_strides[input][axis];               \
+            }                                                               \
+            if (coordinates[axis] < dimensions[axis]) {                     \
+                break;                                                      \
+            }                                                               \
+            coordinates[axis] = 0;                                          \
+            for (uint8_t input = 0; input < input_count; input++) {         \
+                offsets[input] -= dimensions[axis] *                        \
+                    input_strides[input][axis];                             \
+            }                                                               \
+        }                                                                   \
+    }                                                                       \
+    return 1;                                                               \
+}
+
+
+@DRIVER_INSTANCES@
